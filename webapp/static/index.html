@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>CobbleGen</title>
+<link rel="icon" href="/static/favicon.ico" sizes="any" />
+<link rel="icon" type="image/png" href="/static/favicon-32.png" />
+<link rel="apple-touch-icon" href="/static/apple-touch-icon.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+<div id="app">
+  <aside class="sidebar">
+    <div class="brand">
+      <img class="brand-mark" src="/static/logo.png" alt="" />
+      <div>
+        <div class="brand-name">CobbleGen</div>
+        <div class="brand-sub">Reddit to Shorts</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <button class="nav-item active" data-view="create"><span>+</span> Create</button>
+      <button class="nav-item" data-view="library"><span>[ ]</span> Library</button>
+      <button class="nav-item" data-view="assets"><span>#</span> Assets</button>
+      <button class="nav-item" data-view="settings"><span>*</span> Settings</button>
+    </nav>
+    <div class="sidebar-foot">
+      <div id="health" class="health">Connecting...</div>
+    </div>
+  </aside>
+
+  <main class="content">
+    <section class="view active" id="view-create">
+      <header class="view-head">
+        <h1>Create a Reel</h1>
+        <p>Paste a Reddit story, tune the look, and generate a vertical short.</p>
+      </header>
+
+      <div class="create-grid">
+        <div class="card">
+          <h3>1. Story</h3>
+          <div class="seg" id="story-source-seg">
+            <button class="seg-btn active" data-src="paste">Paste text</button>
+            <button class="seg-btn" data-src="existing">Existing file</button>
+          </div>
+          <div id="story-paste">
+            <input id="story-title" class="input" placeholder="Reel name (optional, e.g. aita_wedding)" />
+            <textarea id="story-text" class="textarea" rows="12" placeholder="Paste the full Reddit story here..."></textarea>
+            <div class="hint"><span id="word-count">0 words</span> / ~<span id="dur-est">0s</span> narration</div>
+          </div>
+          <div id="story-existing" class="hidden">
+            <select id="story-file" class="input"></select>
+            <div id="story-preview" class="preview-box"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>2. Voice &amp; Sound</h3>
+          <label class="field-label">Narration voice</label>
+          <input id="voice-filter" class="input" placeholder="Filter voices (e.g. EN-US, female, Mia)" style="margin-bottom:8px" />
+          <div class="voice-row">
+            <select id="voice-select" class="input"></select>
+            <button id="voice-preview-btn" class="btn-ghost" title="Preview voice">Play Preview</button>
+          </div>
+          <audio id="voice-audio" class="hidden"></audio>
+
+          <label class="field-label">Background music</label>
+          <select id="music-select" class="input"></select>
+
+          <label class="field-label">Footage</label>
+          <select id="footage-select" class="input"></select>
+        </div>
+
+        <div class="card">
+          <h3>3. Quick tuning</h3>
+          <div id="quick-settings" class="quick-grid"></div>
+          <p class="hint">Full controls live in the Settings tab.</p>
+        </div>
+      </div>
+
+      <div class="generate-bar">
+        <button id="generate-btn" class="btn-primary btn-lg">Generate Reel</button>
+        <div id="generate-msg" class="gen-msg"></div>
+      </div>
+
+      <div id="active-jobs" class="jobs-strip"></div>
+    </section>
+
+    <section class="view" id="view-library">
+      <header class="view-head">
+        <h1>Reel Library</h1>
+        <p>Every reel you've generated, with copy-ready metadata.</p>
+      </header>
+      <div id="library-grid" class="library-grid"></div>
+      <div id="library-empty" class="empty hidden">No reels yet. Create one.</div>
+    </section>
+
+    <section class="view" id="view-assets">
+      <header class="view-head">
+        <h1>Asset Manager</h1>
+        <p>Drop in footage, music, and stories. Drag files anywhere to upload.</p>
+      </header>
+      <div class="assets-grid">
+        <div class="card upload-card" data-kind="footage">
+          <h3>Footage</h3>
+          <div class="dropzone" data-kind="footage">Drop video or click</div>
+          <input type="file" class="file-input" accept="video/*" />
+          <ul class="asset-list" id="asset-footage"></ul>
+        </div>
+        <div class="card upload-card" data-kind="music">
+          <h3>Music</h3>
+          <div class="dropzone" data-kind="music">Drop audio or click</div>
+          <input type="file" class="file-input" accept="audio/*" />
+          <ul class="asset-list" id="asset-music"></ul>
+        </div>
+        <div class="card upload-card" data-kind="stories">
+          <h3>Stories</h3>
+          <div class="dropzone" data-kind="stories">Drop .txt or click</div>
+          <input type="file" class="file-input" accept=".txt" />
+          <ul class="asset-list" id="asset-stories"></ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" id="view-settings">
+      <header class="view-head">
+        <h1>Settings</h1>
+        <p>Defaults applied to new reels. Each generation can override these.</p>
+      </header>
+      <div id="settings-form" class="settings-groups"></div>
+      <p class="hint">Settings are applied per-generation as overrides; they do not rewrite your .env.</p>
+    </section>
+  </main>
+</div>
+
+<div id="modal" class="modal hidden">
+  <div class="modal-backdrop"></div>
+  <div class="modal-body">
+    <button class="modal-close" aria-label="Close">X</button>
+    <div class="modal-content"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

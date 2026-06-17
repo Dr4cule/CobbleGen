@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Secrets and local config
+.env
+*.local
+
+# Runtime state and generated media
+pipeline_state.json
+output/
+temp/
+temp_preview/
+voice/
+*.wav
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.webm
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.ogg
+*.opus
+
+# User-supplied assets
+footage/*
+music/*
+stories/*
+!footage/.gitkeep
+!music/.gitkeep
+!stories/.gitkeep
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

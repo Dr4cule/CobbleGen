@@ -1,0 +1,9 @@
+edge-tts>=6.1.9
+nvidia-riva-client>=2.25.1
+requests>=2.31.0
+Pillow>=10.0.0
+# Web studio UI
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+python-multipart>=0.0.9
+faster-whisper>=1.1.0
