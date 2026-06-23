@@ -137,11 +137,38 @@ NVIDIA_TTS_MAX_CHARS = _env_int("NVIDIA_TTS_MAX_CHARS", 350)
 # (e.g. "...Mia.Angry") is used, so the delivery follows the script's mood.
 # Falls back to NVIDIA_DEFAULT_EMOTION (or the plain voice) when a given emotion
 # is unavailable for the chosen speaker.
+# Emotion mode for NVIDIA Magpie:
+#   "dominant" - detect ONE emotion for the whole reel (consistent voice, the
+#                default; avoids timbre jumps between chunks)
+#   "dynamic"  - switch emotion per chunk (more expressive, less consistent)
+#   "off"      - always use NVIDIA_DEFAULT_EMOTION
+NVIDIA_EMOTION_MODE = _env_str("NVIDIA_EMOTION_MODE", "dominant").strip().lower()
+# Back-compat: NVIDIA_DYNAMIC_EMOTION=false forces "off".
 NVIDIA_DYNAMIC_EMOTION = _env_bool("NVIDIA_DYNAMIC_EMOTION", True)
+if not NVIDIA_DYNAMIC_EMOTION:
+    NVIDIA_EMOTION_MODE = "off"
 NVIDIA_DEFAULT_EMOTION = _env_str("NVIDIA_DEFAULT_EMOTION", "neutral")
+# Normalise every chunk to a consistent loudness before stitching so the volume
+# does not jump between chunks (a common cause of "inconsistent" NVIDIA audio).
+NVIDIA_TTS_NORMALIZE_CHUNKS = _env_bool("NVIDIA_TTS_NORMALIZE_CHUNKS", True)
+NVIDIA_TTS_TARGET_LUFS = _env_float("NVIDIA_TTS_TARGET_LUFS", -18.0)
 NVIDIA_TTS_MAX_ATTEMPTS = _env_int("NVIDIA_TTS_MAX_ATTEMPTS", 2)
 NVIDIA_TTS_CHUNK_CROSSFADE_MS = _env_int("NVIDIA_TTS_CHUNK_CROSSFADE_MS", 25)
 NVIDIA_TTS_GRPC_MAX_MESSAGE_MB = _env_int("NVIDIA_TTS_GRPC_MAX_MESSAGE_MB", 64)
+
+# --- ElevenLabs TTS (high-quality, very consistent voice; emotion inferred from
+# the script automatically). Free tier is limited (~10k characters/month), so it
+# is offered as a selectable engine rather than the default. ---
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY") or os.getenv("ELEVEN_API_KEY")
+ELEVENLABS_VOICE_ID = _env_str("ELEVENLABS_VOICE_ID", "JBFqnCBsd6RMkjVDRZzb")  # George
+ELEVENLABS_MODEL = _env_str("ELEVENLABS_MODEL", "eleven_multilingual_v2")
+ELEVENLABS_OUTPUT_FORMAT = _env_str("ELEVENLABS_OUTPUT_FORMAT", "mp3_44100_128")
+ELEVENLABS_MAX_CHARS = _env_int("ELEVENLABS_MAX_CHARS", 9000)
+ELEVENLABS_STABILITY = _env_float("ELEVENLABS_STABILITY", 0.45)
+ELEVENLABS_SIMILARITY = _env_float("ELEVENLABS_SIMILARITY", 0.8)
+ELEVENLABS_STYLE = _env_float("ELEVENLABS_STYLE", 0.45)
+ELEVENLABS_SPEAKER_BOOST = _env_bool("ELEVENLABS_SPEAKER_BOOST", True)
+ELEVENLABS_BASE_URL = _env_str("ELEVENLABS_BASE_URL", "https://api.elevenlabs.io").rstrip("/")
 VOX_CPM_URL = _env_str("VOX_CPM_URL", "http://master:8001/tts")
 VOX_CPM_SPEAKER = _env_str("VOX_CPM_SPEAKER", "")
 VOX_CPM_PROMPT_TEXT = _env_str("VOX_CPM_PROMPT_TEXT", "")

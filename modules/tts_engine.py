@@ -17,10 +17,21 @@ import edge_tts
 import requests
 
 from config import (
+    ELEVENLABS_API_KEY,
+    ELEVENLABS_BASE_URL,
+    ELEVENLABS_MAX_CHARS,
+    ELEVENLABS_MODEL,
+    ELEVENLABS_OUTPUT_FORMAT,
+    ELEVENLABS_SIMILARITY,
+    ELEVENLABS_SPEAKER_BOOST,
+    ELEVENLABS_STABILITY,
+    ELEVENLABS_STYLE,
+    ELEVENLABS_VOICE_ID,
     ENABLE_TTS_FALLBACK,
     NVIDIA_API_KEY,
     NVIDIA_DEFAULT_EMOTION,
     NVIDIA_DYNAMIC_EMOTION,
+    NVIDIA_EMOTION_MODE,
     NVIDIA_MAGPIE_FUNCTION_ID,
     NVIDIA_RIVA_SERVER,
     NVIDIA_RIVA_USE_SSL,
@@ -29,7 +40,9 @@ from config import (
     NVIDIA_TTS_LANGUAGE_CODE,
     NVIDIA_TTS_MAX_ATTEMPTS,
     NVIDIA_TTS_MAX_CHARS,
+    NVIDIA_TTS_NORMALIZE_CHUNKS,
     NVIDIA_TTS_SAMPLE_RATE_HZ,
+    NVIDIA_TTS_TARGET_LUFS,
     NVIDIA_TTS_VOICE,
     PARLER_EMOTION,
     PARLER_CHUNK_CROSSFADE_MS,
@@ -1108,18 +1121,27 @@ def _generate_nvidia_magpie_audio_with_timestamps(text: str) -> tuple[Path, list
     service, audio_encoding = _nvidia_synthesis_service()
     resolved_voice_name = _resolve_nvidia_voice_name(service, NVIDIA_TTS_VOICE)
 
+    # Emotion strategy. "dominant" keeps ONE voice variant for the whole reel so
+    # the timbre never jumps mid-narration (the main cause of "inconsistent"
+    # audio); "dynamic" switches per chunk; "off" uses the plain voice.
     emotion_resolver = None
-    if NVIDIA_DYNAMIC_EMOTION:
+    mode = NVIDIA_EMOTION_MODE if NVIDIA_DYNAMIC_EMOTION else "off"
+    if mode in {"dominant", "dynamic"}:
         try:
             emotion_resolver = _emotion_voice_resolver(service, resolved_voice_name)
         except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("Could not enable dynamic emotion, using single voice: %s", exc)
+            LOGGER.warning("Could not enable emotion voices, using single voice: %s", exc)
+            emotion_resolver = None
+
+    fixed_voice = resolved_voice_name
+    if emotion_resolver is not None and mode == "dominant":
+        dominant = _detect_chunk_emotion(normalised_text)
+        fixed_voice = emotion_resolver(dominant)
+        LOGGER.info("NVIDIA dominant emotion for reel: %s -> %s", dominant, fixed_voice)
 
     LOGGER.info(
-        "Generating NVIDIA Magpie narration in %d chunk(s), max %d chars each%s.",
-        len(chunks),
-        NVIDIA_TTS_MAX_CHARS,
-        " with per-script emotion" if emotion_resolver else "",
+        "Generating NVIDIA Magpie narration in %d chunk(s), max %d chars each [emotion=%s].",
+        len(chunks), NVIDIA_TTS_MAX_CHARS, mode if emotion_resolver else "off",
     )
 
     chunk_audio_paths: list[Path] = []
@@ -1128,15 +1150,15 @@ def _generate_nvidia_magpie_audio_with_timestamps(text: str) -> tuple[Path, list
     crossfade_seconds = max(0.0, NVIDIA_TTS_CHUNK_CROSSFADE_MS / 1000)
 
     for index, chunk in enumerate(chunks, start=1):
-        chunk_voice = resolved_voice_name
-        if emotion_resolver is not None:
+        if emotion_resolver is not None and mode == "dynamic":
             emotion = _detect_chunk_emotion(chunk)
             chunk_voice = emotion_resolver(emotion)
             LOGGER.info(
-                "Generating NVIDIA Magpie chunk %d/%d (%d chars) [emotion=%s voice=%s].",
-                index, len(chunks), len(chunk), emotion, chunk_voice,
+                "Generating NVIDIA Magpie chunk %d/%d (%d chars) [emotion=%s].",
+                index, len(chunks), len(chunk), emotion,
             )
         else:
+            chunk_voice = fixed_voice
             LOGGER.info("Generating NVIDIA Magpie chunk %d/%d (%d chars).", index, len(chunks), len(chunk))
         chunk_path = TEMP_DIR / f"narration_chunk_{index:02d}.wav"
         generated_path, response_meta = _generate_nvidia_magpie_audio(
@@ -1146,6 +1168,10 @@ def _generate_nvidia_magpie_audio_with_timestamps(text: str) -> tuple[Path, list
             chunk_path,
             chunk_voice,
         )
+        # Normalise each chunk to a consistent loudness so volume doesn't jump at
+        # the stitch points.
+        if NVIDIA_TTS_NORMALIZE_CHUNKS and len(chunks) > 1:
+            generated_path = _normalize_loudness(generated_path, NVIDIA_TTS_TARGET_LUFS)
         chunk_audio_paths.append(generated_path)
 
         chunk_timestamps = _nvidia_word_timestamps_from_meta(response_meta, generated_path)
@@ -1160,6 +1186,220 @@ def _generate_nvidia_magpie_audio_with_timestamps(text: str) -> tuple[Path, list
     final_audio_path = TEMP_DIR / "narration.wav"
     _concat_audio_files(chunk_audio_paths, final_audio_path, crossfade_ms=NVIDIA_TTS_CHUNK_CROSSFADE_MS)
     return final_audio_path, _normalise_word_sequence(combined_timestamps)
+
+
+# ---------------------------------------------------------------------------
+# ElevenLabs TTS
+# ---------------------------------------------------------------------------
+# Curated default voices that work on the free tier (the API key cannot list
+# voices, so we ship a known-good catalogue). IDs are ElevenLabs' public
+# premade voices. Library/community voices require a paid plan.
+ELEVENLABS_VOICE_CATALOG: list[dict[str, str]] = [
+    {"id": "JBFqnCBsd6RMkjVDRZzb", "name": "George", "gender": "male", "desc": "warm, mature storyteller"},
+    {"id": "nPczCjzI2devNBz1zQrb", "name": "Brian", "gender": "male", "desc": "deep, calm narrator"},
+    {"id": "pqHfZKP75CvOlQylNhV4", "name": "Bill", "gender": "male", "desc": "documentary baritone"},
+    {"id": "onwK4e9ZLuTAKqWW03F9", "name": "Daniel", "gender": "male", "desc": "authoritative news read"},
+    {"id": "TX3LPaxmHKxFdv7VOQHJ", "name": "Liam", "gender": "male", "desc": "youthful, energetic"},
+    {"id": "cjVigY5qzO86Huf0OWal", "name": "Eric", "gender": "male", "desc": "friendly, conversational"},
+    {"id": "iP95p4xoKVk53GoZ742B", "name": "Chris", "gender": "male", "desc": "casual, relatable"},
+    {"id": "bIHbv24MWmeRgasZH58o", "name": "Will", "gender": "male", "desc": "chill, easy-going"},
+    {"id": "EXAVITQu4vr4xnSDxMaL", "name": "Sarah", "gender": "female", "desc": "soft, warm"},
+    {"id": "FGY2WhTYpPnrIDTdsKH5", "name": "Laura", "gender": "female", "desc": "bright, upbeat"},
+    {"id": "XB0fDUnXU5powFXDhCwa", "name": "Charlotte", "gender": "female", "desc": "expressive, dramatic"},
+    {"id": "pFZP5JQG7iQjIQuC4Bku", "name": "Lily", "gender": "female", "desc": "gentle, youthful"},
+    {"id": "cgSgspJ2msm6clMCkdW9", "name": "Jessica", "gender": "female", "desc": "playful, modern"},
+    {"id": "Xb7hH8MSUJpSbSDYk0k2", "name": "Alice", "gender": "female", "desc": "clear, confident"},
+    {"id": "XrExE9yKIg1WjnnlVkGX", "name": "Matilda", "gender": "female", "desc": "warm, friendly"},
+]
+
+
+def list_elevenlabs_voices() -> list[dict[str, Any]]:
+    """Return the curated ElevenLabs voice catalogue for the UI."""
+    return [
+        {"ShortName": f"{v['id']}|{v['name']}", "Gender": v["gender"], "Locale": v["desc"]}
+        for v in ELEVENLABS_VOICE_CATALOG
+    ]
+
+
+def _elevenlabs_voice_id(voice: str) -> str:
+    """Accept a bare id, an "id|Name" pair, or a friendly name; return the id."""
+    candidate = (voice or "").strip()
+    if not candidate:
+        return ELEVENLABS_VOICE_ID
+    if "|" in candidate:
+        candidate = candidate.split("|", 1)[0].strip()
+    # If it looks like a 20-char ElevenLabs id, use as-is.
+    if re.fullmatch(r"[A-Za-z0-9]{16,}", candidate):
+        return candidate
+    for v in ELEVENLABS_VOICE_CATALOG:
+        if v["name"].lower() == candidate.lower():
+            return v["id"]
+    return candidate or ELEVENLABS_VOICE_ID
+
+
+def _words_from_char_alignment(
+    characters: list[str],
+    start_times: list[float],
+    end_times: list[float],
+    base_offset: float = 0.0,
+) -> list[dict[str, float | str]]:
+    """Convert ElevenLabs character-level alignment into word timestamps."""
+    words: list[dict[str, float | str]] = []
+    current = ""
+    word_start: float | None = None
+    word_end = 0.0
+    for char, start, end in zip(characters, start_times, end_times):
+        if char.isspace():
+            if current.strip():
+                words.append({"word": current, "start": (word_start or 0.0) + base_offset, "end": word_end + base_offset})
+            current = ""
+            word_start = None
+            continue
+        if word_start is None:
+            word_start = float(start)
+        current += char
+        word_end = float(end)
+    if current.strip():
+        words.append({"word": current, "start": (word_start or 0.0) + base_offset, "end": word_end + base_offset})
+    return words
+
+
+def _elevenlabs_chunks(text: str, max_chars: int) -> list[str]:
+    """Split narration on sentence boundaries, packing up to max_chars.
+
+    Reels almost always fit in a single request (best for consistency); this
+    only splits very long scripts so each request stays under the API limit.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    return _chunk_text_for_vox(text, max_chars)
+
+
+def _request_elevenlabs_audio(
+    text: str,
+    voice_id: str,
+    previous_text: str | None,
+    next_text: str | None,
+) -> tuple[bytes, list[dict[str, Any]]]:
+    if not ELEVENLABS_API_KEY:
+        raise ValueError("ELEVENLABS_API_KEY must be set to use the ElevenLabs backend.")
+
+    url = f"{ELEVENLABS_BASE_URL}/v1/text-to-speech/{voice_id}/with-timestamps"
+    payload: dict[str, Any] = {
+        "text": text,
+        "model_id": ELEVENLABS_MODEL,
+        "voice_settings": {
+            "stability": ELEVENLABS_STABILITY,
+            "similarity_boost": ELEVENLABS_SIMILARITY,
+            "style": ELEVENLABS_STYLE,
+            "use_speaker_boost": ELEVENLABS_SPEAKER_BOOST,
+        },
+    }
+    # Continuity context keeps prosody consistent across multi-chunk narrations.
+    if previous_text:
+        payload["previous_text"] = previous_text[-500:]
+    if next_text:
+        payload["next_text"] = next_text[:500]
+
+    response = requests.post(
+        url,
+        params={"output_format": ELEVENLABS_OUTPUT_FORMAT},
+        headers={"xi-api-key": ELEVENLABS_API_KEY, "Content-Type": "application/json"},
+        json=payload,
+        timeout=TTS_REQUEST_TIMEOUT,
+    )
+    if response.status_code == 401:
+        raise RuntimeError(f"ElevenLabs auth/permission error: {response.text[:300]}")
+    if response.status_code == 402:
+        raise RuntimeError("ElevenLabs quota exhausted or voice requires a paid plan.")
+    if response.status_code == 429:
+        raise RuntimeError("ElevenLabs rate limit hit; try again shortly.")
+    if not response.ok:
+        raise RuntimeError(f"ElevenLabs request failed ({response.status_code}): {response.text[:300]}")
+
+    body = response.json()
+    audio_b64 = body.get("audio_base64")
+    if not audio_b64:
+        raise RuntimeError("ElevenLabs response did not include audio.")
+    import base64
+
+    audio_bytes = base64.b64decode(audio_b64)
+    alignment = body.get("alignment") or body.get("normalized_alignment") or {}
+    return audio_bytes, alignment
+
+
+def _generate_elevenlabs_audio_with_timestamps(text: str) -> tuple[Path, list[dict[str, float | str]]]:
+    normalised_text = _normalise_tts_text(text)
+    if not normalised_text:
+        raise ValueError("Cannot generate speech for empty text.")
+
+    voice_id = _elevenlabs_voice_id(_active_elevenlabs_voice())
+    chunks = _elevenlabs_chunks(normalised_text, ELEVENLABS_MAX_CHARS)
+    LOGGER.info("Generating ElevenLabs narration in %d chunk(s) with voice %s.", len(chunks), voice_id)
+
+    mp3_paths: list[Path] = []
+    combined_timestamps: list[dict[str, float | str]] = []
+    current_offset = 0.0
+
+    for index, chunk in enumerate(chunks, start=1):
+        previous_text = chunks[index - 2] if index >= 2 else None
+        next_text = chunks[index] if index < len(chunks) else None
+        audio_bytes, alignment = _request_elevenlabs_audio(chunk, voice_id, previous_text, next_text)
+        chunk_mp3 = TEMP_DIR / f"narration_el_{index:02d}.mp3"
+        chunk_mp3.write_bytes(audio_bytes)
+        mp3_paths.append(chunk_mp3)
+
+        characters = alignment.get("characters") or []
+        starts = alignment.get("character_start_times_seconds") or []
+        ends = alignment.get("character_end_times_seconds") or []
+        if characters and starts and ends:
+            combined_timestamps.extend(_words_from_char_alignment(characters, starts, ends, current_offset))
+        else:
+            combined_timestamps.extend(_offset_timestamps(_proportional_timestamps(chunk, chunk_mp3), current_offset))
+        current_offset += get_audio_duration(chunk_mp3)
+
+    # Convert to a single WAV so downstream mastering/concat behaves identically
+    # to the other backends.
+    final_wav = TEMP_DIR / "narration.wav"
+    if len(mp3_paths) == 1:
+        _convert_to_wav(mp3_paths[0], final_wav)
+    else:
+        _concat_audio_files(mp3_paths, final_wav)
+    return final_wav, _normalise_word_sequence(combined_timestamps)
+
+
+# Holds the per-job ElevenLabs voice override (env-driven). Defined as a tiny
+# helper so the dispatcher can pass a voice without threading it everywhere.
+def _active_elevenlabs_voice() -> str:
+    import os
+
+    return os.getenv("ELEVENLABS_VOICE_ID") or ELEVENLABS_VOICE_ID
+
+
+def _convert_to_wav(src: Path, dst: Path) -> Path:
+    command = ["ffmpeg", "-y", "-i", str(src), "-acodec", "pcm_s16le", "-ac", "1", str(dst)]
+    _run_command(command, "FFmpeg mp3->wav conversion")
+    return dst
+
+
+def _normalize_loudness(audio_path: Path, target_lufs: float) -> Path:
+    """Loudness-normalise a WAV to a target LUFS so chunk volumes match.
+
+    Returns the normalised file, or the original on failure (best-effort).
+    """
+    try:
+        out_path = audio_path.with_name(f"{audio_path.stem}_norm.wav")
+        command = [
+            "ffmpeg", "-y", "-i", str(audio_path),
+            "-af", f"loudnorm=I={target_lufs}:TP=-1.5:LRA=11",
+            "-ar", str(NVIDIA_TTS_SAMPLE_RATE_HZ), "-ac", "1",
+            "-c:a", "pcm_s16le", str(out_path),
+        ]
+        _run_command(command, "FFmpeg loudness normalisation")
+        return out_path
+    except Exception as exc:  # noqa: BLE001
+        LOGGER.warning("Loudness normalisation failed, using raw chunk: %s", exc)
+        return audio_path
 
 
 def _generate_piper_audio(text: str, output_path: Path) -> Path:
@@ -1289,6 +1529,9 @@ def generate_speech(text: str) -> tuple[Path, list[dict[str, float | str]]]:
     normalised_text = _normalise_tts_text(text)
 
     def _generate_with_backend(backend_name: str) -> tuple[Path, list[dict[str, float | str]]]:
+        if backend_name in {"elevenlabs", "eleven_labs", "eleven", "11labs", "elabs"}:
+            return _generate_elevenlabs_audio_with_timestamps(normalised_text)
+
         if backend_name in {"nvidia", "nvidia_magpie", "nvidia-magpie", "magpie", "magpie_tts", "riva"}:
             return _generate_nvidia_magpie_audio_with_timestamps(normalised_text)
 
@@ -1392,9 +1635,11 @@ def list_nvidia_tts_voices() -> list[dict[str, Any]]:
     return voices
 
 
-def list_tts_voices() -> list[dict[str, Any]]:
-    """Return voices for the configured backend when supported."""
-    backend_name = TTS_BACKEND.strip().lower()
+def list_tts_voices(backend: str | None = None) -> list[dict[str, Any]]:
+    """Return voices for the given (or configured) backend when supported."""
+    backend_name = (backend or TTS_BACKEND).strip().lower()
+    if backend_name in {"elevenlabs", "eleven_labs", "eleven", "11labs", "elabs"}:
+        return list_elevenlabs_voices()
     if backend_name in {"nvidia", "nvidia_magpie", "nvidia-magpie", "magpie", "magpie_tts", "riva"}:
         return list_nvidia_tts_voices()
     return list_edge_tts_voices()

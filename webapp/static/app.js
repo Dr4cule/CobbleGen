@@ -95,18 +95,49 @@ function renderVoiceOptions(filter) {
     .filter((v) => !f || (v.id + ' ' + v.gender + ' ' + v.locale).toLowerCase().includes(f))
     .sort((a, b) => voiceSortKey(a).localeCompare(voiceSortKey(b)));
   const keep = sel.value;
-  sel.innerHTML = matches.slice(0, 300).map((v) =>
-    `<option value="${v.id}">${v.id}${v.gender ? ' / ' + v.gender : ''}${v.locale ? ' / ' + v.locale : ''}</option>`).join('');
+  sel.innerHTML = matches.slice(0, 300).map((v) => {
+    // ElevenLabs ids arrive as "id|Name"; show the friendly name + description.
+    const label = v.id.includes('|') ? v.id.split('|')[1] : v.id;
+    const extra = [v.gender, v.locale].filter(Boolean).join(' / ');
+    return `<option value="${v.id}">${label}${extra ? ' / ' + extra : ''}</option>`;
+  }).join('');
   if (matches.some((v) => v.id === keep)) sel.value = keep;
   else if (matches.some((v) => v.id === state.currentVoice)) sel.value = state.currentVoice;
 }
 
-async function loadVoices() {
+async function loadEngines() {
   try {
-    const data = await api('/api/voices');
+    const data = await api('/api/engines');
+    state.engines = data.engines || [];
+    state.engine = data.current || (state.engines[0] && state.engines[0].id) || 'nvidia_magpie';
+    const sel = $('#engine-select');
+    sel.innerHTML = state.engines.map((e) => `<option value="${e.id}">${e.label}</option>`).join('');
+    sel.value = state.engine;
+    updateEngineNote();
+    sel.addEventListener('change', async () => {
+      state.engine = sel.value;
+      updateEngineNote();
+      $('#voice-filter').value = '';
+      await loadVoices();
+    });
+  } catch (e) {
+    $('#engine-select').innerHTML = '<option value="nvidia_magpie">NVIDIA Magpie</option>';
+  }
+}
+
+function updateEngineNote() {
+  const eng = (state.engines || []).find((e) => e.id === state.engine);
+  $('#engine-note').textContent = eng ? eng.note : '';
+}
+
+async function loadVoices() {
+  const sel = $('#voice-select');
+  sel.innerHTML = '<option value="">Loading voices…</option>';
+  try {
+    const data = await api('/api/voices?engine=' + encodeURIComponent(state.engine || ''));
     state.voices = data.voices || [];
     state.currentVoice = data.current || '';
-    const sel = $('#voice-select');
+    if (data.error) toast('Voices: ' + data.error, 'bad');
     if (!state.voices.length) {
       sel.innerHTML = `<option value="">(default: ${data.current || 'backend voice'})</option>`;
       return;
@@ -114,7 +145,7 @@ async function loadVoices() {
     renderVoiceOptions('');
     sel.value = state.currentVoice || sel.options[0]?.value || '';
   } catch (e) {
-    $('#voice-select').innerHTML = '<option value="">(voices unavailable)</option>';
+    sel.innerHTML = '<option value="">(voices unavailable)</option>';
   }
 }
 
@@ -129,6 +160,7 @@ $('#voice-preview-btn').addEventListener('click', async () => {
   try {
     const params = new URLSearchParams();
     if (voice) params.set('voice', voice);
+    if (state.engine) params.set('engine', state.engine);
     const res = await fetch('/api/voice-preview?' + params.toString());
     if (!res.ok) throw new Error('Preview failed');
     const blob = await res.blob();
@@ -286,6 +318,7 @@ $('#generate-btn').addEventListener('click', async () => {
     payload.story_text = text;
     payload.story_name = $('#story-title').value.trim();
   }
+  if (state.engine) payload.engine = state.engine;
   const voice = $('#voice-select').value; if (voice) payload.voice = voice;
   const music = $('#music-select').value; if (music) payload.music_file = music;
   const footage = $('#footage-select').value; if (footage) payload.footage_file = footage;
@@ -521,6 +554,7 @@ document.addEventListener('keydown', (e) => {
 
 async function init() {
   await loadHealth();
+  await loadEngines();
   await Promise.all([loadVoices(), loadAssets(), loadSettings()]);
   await refreshJobs();
   wireUploads();

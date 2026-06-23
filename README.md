@@ -4,7 +4,6 @@
 
 # CobbleGen
 
-![alt text](image-1.png)
 
 CobbleGen turns Reddit-style story text into vertical short-form reels. It ships with a FastAPI web studio for pasting stories, choosing narration voices, uploading gameplay footage and music, watching live generation progress, and browsing finished reels with copy-ready metadata.
 
@@ -73,15 +72,42 @@ OLLAMA_HOSTS=http://master:11434|nemotron-3-super:cloud,http://slave:11434|qwen3
 
 Each `OLLAMA_HOSTS` entry uses `url|model`. CobbleGen tries them in order and falls back automatically if one host is unavailable. If `OLLAMA_HOSTS` is not set, it uses `OLLAMA_BASE_URL` plus a default `slave` fallback.
 
-For NVIDIA Magpie narration:
+### TTS engines
+
+Pick a narration engine per reel from the **TTS engine** dropdown in the Create tab, or set the default with `TTS_BACKEND`:
+
+| Engine | `TTS_BACKEND` | Notes |
+| --- | --- | --- |
+| NVIDIA Magpie | `nvidia_magpie` | Fast, 400+ voices, per-script emotion. Unlimited. |
+| ElevenLabs | `elevenlabs` | Most natural & consistent; character-accurate karaoke timing. Free tier ~10k chars/month. |
+| Edge TTS | `edge_tts` | Free Microsoft voices, offline-friendly fallback. |
+
+**NVIDIA Magpie:**
 
 ```env
 TTS_BACKEND=nvidia_magpie
 NVIDIA_API_KEY=your_key_here
 NVIDIA_TTS_VOICE=Magpie-Multilingual.EN-US.Mia
+# Emotion mode: dominant (consistent voice for the whole reel, default) |
+#               dynamic (switch per chunk) | off
+NVIDIA_EMOTION_MODE=dominant
+NVIDIA_TTS_NORMALIZE_CHUNKS=true   # match loudness across stitched chunks
 ```
 
-For a lighter fallback:
+`dominant` mode picks one emotion for the entire reel so the voice timbre never jumps between chunks (the usual cause of "inconsistent" Magpie audio), while still matching the story's mood. Chunks are loudness-normalised before stitching so volume stays even.
+
+**ElevenLabs** (key needs only the *Text to Speech* permission; voice listing/quota are not required):
+
+```env
+TTS_BACKEND=elevenlabs
+ELEVENLABS_API_KEY=your_key_here
+ELEVENLABS_VOICE_ID=JBFqnCBsd6RMkjVDRZzb   # George (free-tier premade voice)
+ELEVENLABS_MODEL=eleven_multilingual_v2
+```
+
+Reels are sent to ElevenLabs in a single request whenever they fit (almost always), which gives the most consistent voice and exact word timing with no glitches. Free-tier premade voices include George, Brian, Bill, Sarah, Charlotte, and more — all selectable in the UI.
+
+**Edge TTS** (lighter fallback):
 
 ```env
 TTS_BACKEND=edge_tts

@@ -94,6 +94,7 @@ class GenerateRequest(BaseModel):
     story_text: str | None = None
     story_name: str | None = None
     story_file: str | None = None  # existing file in stories dir
+    engine: str | None = None  # tts engine: nvidia_magpie | elevenlabs | edge_tts
     voice: str | None = None
     music_file: str | None = None
     footage_file: str | None = None
@@ -145,16 +146,37 @@ def assets() -> dict[str, Any]:
 
 _VOICE_CACHE: dict[str, Any] = {}
 
+# Selectable TTS engines exposed in the UI. `backend` maps to TTS_BACKEND.
+TTS_ENGINES = [
+    {"id": "nvidia_magpie", "label": "NVIDIA Magpie", "note": "Fast, 400+ voices, per-script emotion. Unlimited."},
+    {"id": "elevenlabs", "label": "ElevenLabs", "note": "Most consistent & natural. Free tier ~10k chars/month."},
+    {"id": "edge_tts", "label": "Edge TTS", "note": "Free, offline-friendly Microsoft voices."},
+]
+_ENGINE_BACKENDS = {e["id"] for e in TTS_ENGINES}
+
+
+def _engine_current_voice(engine: str) -> str:
+    if "eleven" in engine:
+        return config.ELEVENLABS_VOICE_ID
+    if "nvidia" in engine or "magpie" in engine or "riva" in engine:
+        return config.NVIDIA_TTS_VOICE
+    return config.TTS_VOICE
+
+
+@app.get("/api/engines")
+def engines() -> dict[str, Any]:
+    return {"engines": TTS_ENGINES, "current": config.TTS_BACKEND}
+
 
 @app.get("/api/voices")
-def voices() -> dict[str, Any]:
-    cache_key = config.TTS_BACKEND
-    if cache_key in _VOICE_CACHE:
-        return _VOICE_CACHE[cache_key]
+def voices(engine: str | None = None) -> dict[str, Any]:
+    backend = (engine or config.TTS_BACKEND).strip().lower()
+    if backend in _VOICE_CACHE:
+        return _VOICE_CACHE[backend]
     try:
-        raw = list_tts_voices()
+        raw = list_tts_voices(backend)
     except Exception as exc:  # noqa: BLE001
-        return {"backend": config.TTS_BACKEND, "voices": [], "error": str(exc)}
+        return {"backend": backend, "voices": [], "error": str(exc)}
     voices_out = [
         {
             "id": v.get("ShortName") or v.get("Name") or "",
@@ -164,8 +186,9 @@ def voices() -> dict[str, Any]:
         for v in raw
         if v.get("ShortName") or v.get("Name")
     ]
-    result = {"backend": config.TTS_BACKEND, "voices": voices_out, "current": config.NVIDIA_TTS_VOICE if "nvidia" in config.TTS_BACKEND else config.TTS_VOICE}
-    _VOICE_CACHE[cache_key] = result
+    result = {"backend": backend, "voices": voices_out, "current": _engine_current_voice(backend)}
+    if voices_out:  # don't cache transient API failures
+        _VOICE_CACHE[backend] = result
     return result
 
 
@@ -176,28 +199,39 @@ PREVIEW_DIR = BASE_DIR / "temp_preview"
 
 
 @app.get("/api/voice-preview")
-def voice_preview(voice: str | None = None) -> FileResponse:
-    """Generate a short narration sample for the given voice and return audio.
+def voice_preview(voice: str | None = None, engine: str | None = None) -> FileResponse:
+    """Generate a short narration sample for the given voice/engine.
 
     Runs in its own temp directory (never the job temp dir) and serialises with
     a lock, so previewing a voice can never collide with a reel being rendered.
     """
     from modules import tts_engine
 
-    cache_key = voice or "__default__"
+    backend = (engine or config.TTS_BACKEND).strip().lower()
+    cache_key = f"{backend}:{voice or '__default__'}"
     cached = _PREVIEW_CACHE.get(cache_key)
     if cached and cached.exists():
         return FileResponse(str(cached), media_type=_audio_mime(cached))
 
-    voice_attr = "NVIDIA_TTS_VOICE" if "nvidia" in config.TTS_BACKEND.lower() else "TTS_VOICE"
+    if "eleven" in backend:
+        voice_attr = "ELEVENLABS_VOICE_ID"
+        voice_value = voice.split("|", 1)[0].strip() if voice else None
+    elif "nvidia" in backend or "magpie" in backend or "riva" in backend:
+        voice_attr = "NVIDIA_TTS_VOICE"
+        voice_value = voice
+    else:
+        voice_attr = "TTS_VOICE"
+        voice_value = voice
     PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
 
     with _PREVIEW_LOCK:
         original_temp = tts_engine.TEMP_DIR
-        original_voice = getattr(tts_engine, voice_attr)
+        original_voice = getattr(tts_engine, voice_attr, None)
+        original_backend = tts_engine.TTS_BACKEND
         tts_engine.TEMP_DIR = PREVIEW_DIR
-        if voice:
-            setattr(tts_engine, voice_attr, voice)
+        tts_engine.TTS_BACKEND = backend
+        if voice_value:
+            setattr(tts_engine, voice_attr, voice_value)
         try:
             audio_path, _ = tts_engine.generate_speech(_PREVIEW_TEXT)
             preview_path = PREVIEW_DIR / f"voice_preview_{_safe_name(cache_key)}{audio_path.suffix}"
@@ -206,7 +240,9 @@ def voice_preview(voice: str | None = None) -> FileResponse:
             raise HTTPException(500, f"Voice preview failed: {exc}")
         finally:
             tts_engine.TEMP_DIR = original_temp
-            setattr(tts_engine, voice_attr, original_voice)
+            tts_engine.TTS_BACKEND = original_backend
+            if original_voice is not None:
+                setattr(tts_engine, voice_attr, original_voice)
 
     _PREVIEW_CACHE[cache_key] = preview_path
     return FileResponse(str(preview_path), media_type=_audio_mime(preview_path))
@@ -254,12 +290,27 @@ def generate(req: GenerateRequest) -> dict[str, Any]:
     for key, value in (req.settings or {}).items():
         if key in SETTINGS_KEYS and value not in (None, ""):
             overrides[key] = value
+
+    # Engine selection (TTS_BACKEND) + per-engine voice routing.
+    if req.engine and req.engine.strip().lower() not in _ENGINE_BACKENDS:
+        raise HTTPException(400, f"Unknown TTS engine: {req.engine}")
+    engine = (req.engine or config.TTS_BACKEND).strip().lower()
+    if engine in _ENGINE_BACKENDS:
+        overrides["TTS_BACKEND"] = engine
+    else:
+        engine = config.TTS_BACKEND.strip().lower()
+
     if req.voice:
-        overrides[_voice_env_key()] = req.voice
-        # If the user explicitly picked an emotion variant (e.g. "...Mia.Angry"),
-        # honour that fixed emotion instead of switching emotions per chunk.
-        if req.voice.rsplit(".", 1)[-1].lower() in _KNOWN_EMOTIONS:
-            overrides["NVIDIA_DYNAMIC_EMOTION"] = "false"
+        if "eleven" in engine:
+            overrides["ELEVENLABS_VOICE_ID"] = req.voice.split("|", 1)[0].strip()
+        elif "nvidia" in engine or "magpie" in engine or "riva" in engine:
+            overrides["NVIDIA_TTS_VOICE"] = req.voice
+            # If the user explicitly picked an emotion variant (e.g. "...Mia.Angry"),
+            # honour that fixed emotion instead of switching emotions per chunk.
+            if req.voice.rsplit(".", 1)[-1].lower() in _KNOWN_EMOTIONS:
+                overrides["NVIDIA_DYNAMIC_EMOTION"] = "false"
+        else:
+            overrides["TTS_VOICE"] = req.voice
     if req.music_file:
         music_path = config.MUSIC_DIR / Path(req.music_file).name
         if music_path.exists():
