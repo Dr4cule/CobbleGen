@@ -106,6 +106,9 @@ def _karaoke_caption_text(group: list[dict[str, float | str]]) -> str:
     for item in group:
         word = _escape_ass_text(str(item["word"]))
         plain_word = re.sub(r"[^\w']+", "", str(item["word"]).strip()) or str(item["word"]).strip()
+        # Skip empty/whitespace-only tokens so we don't emit stray {\kf1} tags.
+        if not plain_word:
+            continue
         duration_cs = max(1, math.ceil((float(item["end"]) - float(item["start"])) * 100))
         prefix = ""
         extra_chars = len(plain_word) + (1 if line_chars else 0)
@@ -168,7 +171,14 @@ def generate_ass_subtitles(word_timestamps: list[dict[str, float | str]]) -> Pat
             continue
         start = float(group[0]["start"])
         end = float(group[-1]["end"])
+        if end <= start:
+            # Defensive: avoid degenerate Dialogue lines that FFmpeg may reject
+            # or render as invisible (causing apparent "subtitles stopped").
+            end = start + 0.2
         text = _karaoke_caption_text(group)
+        if not text.strip():
+            # Group consisted entirely of skipped empty/punctuation tokens.
+            continue
         lines.append(
             "Dialogue: 0,"
             f"{_format_ass_time(start)},{_format_ass_time(end)},{SUBTITLE_STYLE_NAME},,"

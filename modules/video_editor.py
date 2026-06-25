@@ -616,7 +616,14 @@ def assemble_video(
             timeline = _replace_timeline_intro(timeline, intro_card, INTRO_DURATION)
             intro_applied = True
 
-    subtitle_input = subtitle_path_obj
+    # The intro card already displays the hook text, so suppress the first
+    # INTRO_DURATION seconds of karaoke subtitles to prevent double-text on
+    # screen. Audio is unchanged (it still plays over the intro card), so this
+    # is a content suppression, not a timing shift.
+    if intro_applied:
+        subtitle_input = _suppress_subtitles_before(subtitle_path_obj, INTRO_DURATION)
+    else:
+        subtitle_input = subtitle_path_obj
     try:
         ass_filter_path = subtitle_input.resolve().relative_to(Path.cwd().resolve()).as_posix()
     except ValueError:

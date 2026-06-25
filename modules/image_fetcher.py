@@ -132,13 +132,6 @@ def _dedupe_queries(values: list[str]) -> list[str]:
 
 
 def _scene_candidate_queries(scene: dict[str, Any]) -> list[str]:
-    raw_terms = scene.get("search_terms", [])
-    terms: list[str] = []
-    if isinstance(raw_terms, str):
-        terms.append(_search_phrase(raw_terms))
-    elif isinstance(raw_terms, list):
-        terms.extend(_search_phrase(str(term)) for term in raw_terms if str(term).strip())
-
     query = str(scene.get("query") or "").strip()
     caption = str(scene.get("caption") or "").strip()
     story_excerpt = str(scene.get("story_excerpt") or "").strip()
@@ -146,19 +139,27 @@ def _scene_candidate_queries(scene: dict[str, Any]) -> list[str]:
     caption_phrase = _search_phrase(caption)
     excerpt_phrase = _search_phrase(story_excerpt)
 
-    terms.extend(
-        [
-            query_phrase,
-            excerpt_phrase,
-            caption_phrase,
-            query,
-            caption,
-            f"{query_phrase} {caption_phrase}" if query_phrase and caption_phrase else "",
-            f"{query_phrase} {excerpt_phrase}" if query_phrase and excerpt_phrase else "",
-            f"{caption_phrase} {excerpt_phrase}" if caption_phrase and excerpt_phrase else "",
-        ]
-    )
-    return _dedupe_queries(terms)[:4]
+    # The LLM's `query` is the cleanest, most story-specific 2-4 word phrase, so
+    # try it first. Combining it with the caption sharpens relevance. Only after
+    # those do we fall back to the noisier auto-extracted search_terms and
+    # excerpt fragments, so a junk fragment never crowds out the good query.
+    raw_terms = scene.get("search_terms", [])
+    extra_terms: list[str] = []
+    if isinstance(raw_terms, str):
+        extra_terms.append(_search_phrase(raw_terms))
+    elif isinstance(raw_terms, list):
+        extra_terms.extend(_search_phrase(str(term)) for term in raw_terms if str(term).strip())
+
+    terms = [
+        query,
+        query_phrase,
+        f"{query_phrase} {caption_phrase}" if query_phrase and caption_phrase else "",
+        caption_phrase,
+        f"{query_phrase} {excerpt_phrase}" if query_phrase and excerpt_phrase else "",
+        *extra_terms,
+        excerpt_phrase,
+    ]
+    return _dedupe_queries(terms)[:5]
 
 
 def _result_search_text(result: dict[str, Any]) -> str:
@@ -185,14 +186,32 @@ def _score_result(scene: dict[str, Any], candidate_query: str, result: dict[str,
     candidate_tokens = _tokenise(candidate_query)
     scene_tokens = _tokenise(" ".join(str(scene.get(field) or "") for field in ("query", "caption", "story_excerpt")))
     result_tokens = _tokenise(_result_search_text(result))
+    result_text = _result_search_text(result).lower()
 
     if not result_tokens:
         return -10.0
 
-    score = 0.0
-    score += len(candidate_tokens & result_tokens) * 4.0
-    score += len(scene_tokens & result_tokens) * 1.5
+    candidate_overlap = candidate_tokens & result_tokens
+    scene_overlap = scene_tokens & result_tokens
 
+    score = 0.0
+    # Heavy weight on the LLM's chosen search phrase hitting the result.
+    score += len(candidate_overlap) * 4.0
+    # Story-specific tokens (from caption/excerpt) matching the result.
+    score += len(scene_overlap) * 2.0
+
+    # Big bonus when the exact candidate phrase appears verbatim in the result
+    # text — this means the photo was tagged with the story's own subject.
+    candidate_phrase = _normalise_text(candidate_query).lower()
+    if candidate_phrase and len(candidate_phrase) >= 6 and candidate_phrase in result_text:
+        score += 6.0
+
+    # Penalise results that share zero story-specific tokens with the scene —
+    # those are the ones that look like a random stock photo.
+    if scene_tokens and not scene_overlap:
+        score -= 5.0
+
+    # Mild bonus for subset match (rare on Unsplash, but rewarding when it happens).
     if candidate_tokens and candidate_tokens <= result_tokens:
         score += 3.0
 
@@ -224,7 +243,7 @@ def _best_unsplash_result(scene: dict[str, Any]) -> tuple[str, dict[str, Any]] |
             if best_choice is None or score > best_choice[0]:
                 best_choice = (score, candidate_query, result)
 
-        if best_choice is not None and best_choice[0] >= 7.5:
+        if best_choice is not None and best_choice[0] >= 12.0:
             break
 
     if best_choice is None:

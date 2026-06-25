@@ -29,6 +29,32 @@ _KNOWN_EMOTIONS = {"neutral", "calm", "happy", "sad", "angry", "fearful", "fear"
 app = FastAPI(title="CobbleGen", version="1.0.0")
 
 
+# Quietly ignore the benign connection-reset noise the Windows asyncio Proactor
+# event loop raises when a browser aborts a video range request mid-stream
+# (seeking, closing the tab, or the <video> element re-requesting a range).
+# These are not real errors; without this handler uvicorn prints a scary
+# ConnectionResetError traceback for every interrupted video fetch.
+_IGNORED_LOOP_ERRORS = (ConnectionResetError, ConnectionAbortedError, BrokenPipeError)
+
+
+def _quiet_loop_exception_handler(loop: "asyncio.AbstractEventLoop", context: dict[str, Any]) -> None:
+    exc = context.get("exception")
+    if isinstance(exc, _IGNORED_LOOP_ERRORS):
+        return
+    message = str(context.get("message", "")).lower()
+    if "connection" in message and any(w in message for w in ("reset", "lost", "abort", "closed")):
+        return
+    loop.default_exception_handler(context)
+
+
+@app.on_event("startup")
+async def _install_quiet_exception_handler() -> None:
+    try:
+        asyncio.get_running_loop().set_exception_handler(_quiet_loop_exception_handler)
+    except RuntimeError:
+        pass
+
+
 def _safe_name(value: str) -> str:
     cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", value.strip()).strip("._-")
     return cleaned or f"item_{int(time.time())}"

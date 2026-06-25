@@ -1507,12 +1507,52 @@ def _whisper_align(text: str, audio_path: Path) -> list[dict[str, float | str]]:
 def _timestamps_with_fallback(text: str, audio_path: Path) -> list[dict[str, float | str]]:
     if USE_WHISPER_ALIGN:
         try:
-            return _whisper_align(text, audio_path)
+            aligned = _whisper_align(text, audio_path)
+            if _alignment_covers_audio(aligned, text, audio_path):
+                return aligned
+            LOGGER.warning(
+                "Whisper alignment under-covered the audio (would drop subtitles); "
+                "using proportional timing for full coverage."
+            )
         except ImportError:
             LOGGER.warning("faster-whisper is not installed; using proportional timing fallback.")
         except Exception as exc:
             LOGGER.warning("Whisper alignment failed; using proportional timing fallback: %s", exc)
     return _proportional_timestamps(text, audio_path)
+
+
+def _alignment_covers_audio(
+    words: list[dict[str, float | str]],
+    text: str,
+    audio_path: Path,
+) -> bool:
+    """Reject whisper alignments that would leave part of the reel un-subtitled.
+
+    Whisper transcribes what it hears and can stop early, skip the tail, or drop
+    a long run of words on long/echoey audio. When that happens the karaoke
+    subtitles vanish for the rest of the video. We require the alignment to both
+    span most of the audio's duration AND contain a reasonable share of the
+    spoken words; otherwise the caller falls back to proportional timing, which
+    always covers the whole clip with the real script words.
+    """
+    if not words:
+        return False
+    try:
+        audio_duration = get_audio_duration(audio_path)
+    except Exception:  # noqa: BLE001
+        audio_duration = 0.0
+
+    expected_words = len([w for w in text.split() if w.strip()])
+    aligned_words = len(words)
+    last_end = max(float(w["end"]) for w in words)
+
+    # Coverage by time: the final word should land near the end of the audio.
+    if audio_duration > 1.0 and last_end < audio_duration * 0.85:
+        return False
+    # Coverage by word count: guard against big mid-stream drops.
+    if expected_words and aligned_words < expected_words * 0.7:
+        return False
+    return True
 
 
 def generate_speech(text: str) -> tuple[Path, list[dict[str, float | str]]]:
